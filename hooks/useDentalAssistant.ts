@@ -29,13 +29,19 @@ YOUR PERSONA:
     -   You MUST say: "Okay, I have your number as {user's number}. Please check your screen, is that correct?"
     -   If 'no', ask them to repeat it slowly.
 4.  **Transition to Scan (CRITICAL)**:
-    -   Once the phone number is confirmed correct, you MUST say: “Thank you, {name}! We have everything we need. I'm now starting the facial scan.”
+    -   Once the phone number is confirmed correct, you MUST say: “Thank you, {name}! We have everything we need. I'm now starting the facial scan. Please position your face in the oval and capture at least 3 photos using the 'Capture' button. When you are done, just say 'analyze my photos' or 'I'm ready'.”
     -   Immediately after saying this, you MUST call the \`start_facial_scan\` function. Do not wait for any further user input. Just call the function.
 `;
 
 const START_SCAN_TOOL: FunctionDeclaration = {
     name: 'start_facial_scan',
     description: 'Call this function to start the camera for the facial scan once the user has confirmed they are ready.',
+    parameters: { type: Type.OBJECT, properties: {}, required: [] }
+};
+
+const ANALYZE_PHOTOS_TOOL: FunctionDeclaration = {
+    name: 'analyze_photos',
+    description: "Call this function when the user indicates they have finished capturing photos and are ready for analysis (e.g., they say 'analyze my photos' or 'I'm ready').",
     parameters: { type: Type.OBJECT, properties: {}, required: [] }
 };
 
@@ -190,6 +196,62 @@ export const useMedzealAssistant = () => {
         }
     }, []);
 
+    const analyzeImages = useCallback(async (): Promise<boolean> => {
+        if (capturedImages.length < 3) {
+            setError("Please capture at least 3 photos for an accurate analysis. The AI is still listening; please capture more photos and say 'I'm ready' when you are done.");
+            setAppState(AppState.SCANNING); // Stay on scanning page
+            return false; // Indicate failure
+        }
+        
+        setAppState(AppState.ANALYZING);
+
+        const apiKey = process.env.API_KEY;
+        if (!apiKey) {
+            setError("The API key is missing. Please ensure it is configured correctly.");
+            setAppState(AppState.ERROR);
+            return false;
+        }
+
+        try {
+            const ai = new GoogleGenAI({ apiKey });
+
+            const imageParts = capturedImages.map(imgBase64 => ({
+                inlineData: { mimeType: 'image/jpeg', data: imgBase64, },
+            }));
+
+            const userContext = { text: `This analysis is for user ${userData.current.name}.` };
+
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: { parts: [userContext, ...imageParts] },
+                config: {
+                    systemInstruction: ANALYSIS_SYSTEM_INSTRUCTION,
+                    responseMimeType: "application/json",
+                    responseSchema: REPORT_SCHEMA,
+                }
+            });
+            
+            const parsedReport = JSON.parse(response.text);
+            
+            const newReport: SkinReport = {
+                name: userData.current.name,
+                phone: userData.current.phone,
+                date: new Date().toLocaleString(),
+                ...parsedReport
+            };
+
+            setReport(newReport);
+            setAppState(AppState.REPORT);
+            return true; // Indicate success
+
+        } catch(e) {
+            console.error("Analysis failed:", e);
+            setError("Sorry, the analysis could not be completed. Please try again. The AI is still listening.");
+            setAppState(AppState.SCANNING); // Go back to scanning
+            return false; // Indicate failure
+        }
+    }, [capturedImages, userData]);
+
     const handleMessage = useCallback(async (message: LiveServerMessage) => {
         if (message.serverContent?.outputTranscription) {
             setCurrentGeminiText(prev => prev + message.serverContent.outputTranscription.text);
@@ -197,6 +259,8 @@ export const useMedzealAssistant = () => {
             const text = message.serverContent.inputTranscription.text;
             if(lastQuestionRef.current) {
                 setDetailToVerify({ type: lastQuestionRef.current, value: text });
+            } else {
+                 setDetailToVerify({ type: 'unknown', value: text });
             }
         }
 
@@ -204,7 +268,13 @@ export const useMedzealAssistant = () => {
             for(const fc of message.toolCall.functionCalls) {
                 if (fc.name === 'start_facial_scan') {
                     setAppState(AppState.SCANNING);
-                    cleanupConversation();
+                    // Do not cleanupConversation() here - we want the AI to stay active
+                }
+                if (fc.name === 'analyze_photos') {
+                    const success = await analyzeImages();
+                    if (success) {
+                        cleanupConversation(); // End audio session *after* successful analysis
+                    }
                 }
                 if (fc.name === 'send_report_to_whatsapp') {
                     cleanupConversation();
@@ -218,8 +288,9 @@ export const useMedzealAssistant = () => {
                 const outputText = currentGeminiText.toLowerCase();
                 const inputText = detailToVerify?.value || '';
         
-                const isAskingForName = outputText.includes("can i get your full name");
-                const isAskingForPhone = outputText.includes("can you please tell me your mobile number");
+                // More robust keyword matching
+                const isAskingForName = outputText.includes("can i get your full name") || outputText.includes("spell your full name");
+                const isAskingForPhone = outputText.includes("mobile number") || outputText.includes("phone number");
         
                 if (isAskingForName) {
                     lastQuestionRef.current = 'name';
@@ -227,7 +298,6 @@ export const useMedzealAssistant = () => {
                     lastQuestionRef.current = 'phone';
                 } 
                 // Only process saved details if the AI is not asking a new question.
-                // This prevents a race condition where the old detail is saved for the new question.
                 else if (inputText && lastQuestionRef.current) {
                     if (lastQuestionRef.current === 'name') {
                         userData.current.name = inputText;
@@ -265,7 +335,7 @@ export const useMedzealAssistant = () => {
                 }
             };
         }
-    }, [currentGeminiText, detailToVerify, cleanupConversation, prepareAndDownloadPdf]);
+    }, [currentGeminiText, detailToVerify, cleanupConversation, prepareAndDownloadPdf, analyzeImages]);
 
     const startConversation = useCallback(async (type: 'onboarding' | 'post_report') => {
         cleanupConversation();
@@ -330,7 +400,8 @@ export const useMedzealAssistant = () => {
                     systemInstruction: isOnboarding ? ONBOARDING_SYSTEM_INSTRUCTION : POST_REPORT_SYSTEM_INSTRUCTION,
                     inputAudioTranscription: {},
                     outputAudioTranscription: {},
-                    tools: [{functionDeclarations: isOnboarding ? [START_SCAN_TOOL] : [SEND_WHATSAPP_TOOL]}]
+                    // Updated tools list
+                    tools: [{functionDeclarations: isOnboarding ? [START_SCAN_TOOL, ANALYZE_PHOTOS_TOOL] : [SEND_WHATSAPP_TOOL]}]
                 },
             });
         } catch (err) {
@@ -340,55 +411,7 @@ export const useMedzealAssistant = () => {
         }
     }, [handleMessage, isMuted, cleanupConversation]);
 
-    const analyzeImages = useCallback(async () => {
-        if(capturedImages.length === 0) return;
-        setAppState(AppState.ANALYZING);
-
-        const apiKey = process.env.API_KEY;
-        if (!apiKey) {
-            setError("The API key is missing. Please ensure it is configured correctly.");
-            setAppState(AppState.ERROR);
-            return;
-        }
-
-        try {
-            const ai = new GoogleGenAI({ apiKey });
-
-            const imageParts = capturedImages.map(imgBase64 => ({
-                inlineData: { mimeType: 'image/jpeg', data: imgBase64, },
-            }));
-
-            const userContext = { text: `This analysis is for user ${userData.current.name}.` };
-
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: { parts: [userContext, ...imageParts] },
-                config: {
-                    systemInstruction: ANALYSIS_SYSTEM_INSTRUCTION,
-                    responseMimeType: "application/json",
-                    responseSchema: REPORT_SCHEMA,
-                }
-            });
-            
-            const parsedReport = JSON.parse(response.text);
-            
-            const newReport: SkinReport = {
-                name: userData.current.name,
-                phone: userData.current.phone,
-                date: new Date().toLocaleString(),
-                ...parsedReport
-            };
-
-            setReport(newReport);
-            setAppState(AppState.REPORT);
-
-        } catch(e) {
-            console.error("Analysis failed:", e);
-            setError("Sorry, the analysis could not be completed. Please try again.");
-            setAppState(AppState.ERROR);
-        }
-
-    }, [capturedImages]);
+    // analyzeImages was updated above
 
     useEffect(() => {
         let videoStream: MediaStream | null = null;
@@ -424,6 +447,7 @@ export const useMedzealAssistant = () => {
     
     const toggleMute = () => setIsMuted(prev => !prev);
     
+    // --- THIS IS THE CORRECTED PART ---
     return {
         appState,
         videoRef,
@@ -431,13 +455,14 @@ export const useMedzealAssistant = () => {
         startPostReportConversation: () => startConversation('post_report'),
         error,
         report,
-        isMuted,
-        toggleMute,
+        isMuted, // Corrected from isMMuted
+        toggleMute: toggleMute, // Corrected from toggleMMute
         isAssistantSpeaking,
         detailToVerify,
         currentGeminiText,
         capturedImages,
         setCapturedImages,
-        analyzeImages
+        analyzeImages,
+        cleanupConversation
     }
 }

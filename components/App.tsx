@@ -20,10 +20,11 @@ const App: React.FC = () => {
     capturedImages,
     setCapturedImages,
     analyzeImages,
-    startPostReportConversation
+    startPostReportConversation,
+    cleanupConversation // Import cleanupConversation
   } = useMedzealAssistant();
   
-  const isCheckinPhase = [AppState.CONNECTING, AppState.GATHERING_DETAILS, AppState.POST_REPORT_CONVERSATION].includes(appState);
+  const isCheckinPhase = [AppState.CONNECTING, AppState.GATHERING_DETAILS, AppState.POST_REPORT_CONVERSATION, AppState.SCANNING].includes(appState);
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
 
   const handleCapture = useCallback(() => {
@@ -43,6 +44,14 @@ const App: React.FC = () => {
       setCapturedImages([...capturedImages, dataUrl.split(',')[1]]);
     }
   }, [capturedImages, setCapturedImages, videoRef]);
+
+  // New handler for the button click
+  const handleAnalyzeClick = async () => {
+    const success = await analyzeImages();
+    if (success) {
+      cleanupConversation(); // Manually close mic if button is clicked
+    }
+  }
 
   const renderContent = () => {
     switch (appState) {
@@ -101,12 +110,13 @@ const App: React.FC = () => {
                      </div>
                 </div>
                  <div className="flex flex-col md:flex-row items-center justify-center gap-4 w-full">
-                    <div className="order-last md:order-first flex-1 h-20 md:h-24 bg-gray-200 rounded-lg flex items-center justify-center p-2 gap-2 w-full">
+                    {/* --- UPDATED: RESPONSIVE GRID --- */}
+                    <div className="order-last md:order-first flex-1 h-auto bg-gray-200 rounded-lg grid grid-cols-5 gap-2 p-2 w-full">
                         {capturedImages.map((img, index) => (
-                             <img key={index} src={`data:image/jpeg;base64,${img}`} className="h-full aspect-square object-cover rounded-md" />
+                             <img key={index} src={`data:image/jpeg;base64,${img}`} className="w-full aspect-square object-cover rounded-md" />
                         ))}
                         {Array(5 - capturedImages.length).fill(0).map((_, i) => (
-                             <div key={i} className="h-full aspect-square bg-gray-300 rounded-md" />
+                             <div key={i} className="w-full aspect-square bg-gray-300 rounded-md" />
                         ))}
                     </div>
                     <div className="flex w-full md:w-auto gap-4">
@@ -114,12 +124,17 @@ const App: React.FC = () => {
                             Capture
                             <span className="text-xs">({capturedImages.length}/5)</span>
                         </button>
-                        <button onClick={analyzeImages} disabled={capturedImages.length === 0} className="flex-1 md:w-auto h-20 md:h-24 px-6 bg-green-600 text-white rounded-lg font-semibold disabled:bg-gray-400 hover:bg-green-700 transition">
-                            Analyze Photos
+                        <button onClick={handleAnalyzeClick} disabled={capturedImages.length < 3} className="flex-1 md:w-auto h-20 md:h-24 px-6 bg-green-600 text-white rounded-lg font-semibold disabled:bg-gray-400 hover:bg-green-700 transition">
+                            Analyze Photos ({capturedImages.length})
                         </button>
                     </div>
                  </div>
-                 <p className="text-white text-center mt-2 px-4">Position your face within the oval and capture 1-5 photos for analysis.</p>
+                 {/* --- UPDATED: HELPER TEXT --- */}
+                 <p className="text-white text-center mt-2 px-4">
+                    Position your face within the oval and capture 3-5 photos.
+                    <br />
+                    When ready, click "Analyze Photos" or say "I'm ready".
+                 </p>
             </div>
           );
       case AppState.ANALYZING:
@@ -147,7 +162,7 @@ const App: React.FC = () => {
                     <Avatar state={isAssistantSpeaking ? 'speaking' : 'listening'} />
                     {detailToVerify && (
                         <div className="mt-8 bg-black/30 p-4 rounded-lg">
-                            <p className="text-sm text-gray-300 capitalize">{detailToVerify.type} for Verification:</p>
+                            <p className="text-sm text-gray-300 capitalize">{detailToVerify.type === 'unknown' ? 'Heard' : `${detailToVerify.type} for Verification`}:</p>
                             <p className="text-2xl font-mono tracking-widest text-white">{detailToVerify.value}</p>
                         </div>
                     )}
@@ -176,7 +191,7 @@ const App: React.FC = () => {
   };
 
   const getBackgroundColor = () => {
-    if ([AppState.SCANNING, AppState.ANALYZING, AppState.GENERATING_PDF].includes(appState) || isCheckinPhase) return 'bg-gray-800';
+    if (isCheckinPhase || [AppState.ANALYZING, AppState.GENERATING_PDF].includes(appState)) return 'bg-gray-800';
     return 'bg-gray-100';
   };
 
