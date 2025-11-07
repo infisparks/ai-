@@ -15,19 +15,22 @@ const App: React.FC = () => {
     isMuted,
     toggleMute,
     isAssistantSpeaking,
+    isAssistantThinking, // <-- Import new state
     detailToVerify,
     currentGeminiText,
     capturedImages,
     setCapturedImages,
     analyzeImages,
     startPostReportConversation,
-    cleanupConversation // Import cleanupConversation
+    setError // <-- Import setError
   } = useMedzealAssistant();
   
-  const isCheckinPhase = [AppState.CONNECTING, AppState.GATHERING_DETAILS, AppState.POST_REPORT_CONVERSATION, AppState.SCANNING].includes(appState);
+  // SCANNING is no longer part of checkin
+  const isCheckinPhase = [AppState.CONNECTING, AppState.GATHERING_DETAILS, AppState.POST_REPORT_CONVERSATION].includes(appState);
   const canvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
 
   const handleCapture = useCallback(() => {
+    setError(null); // Clear any previous errors when capturing a new photo
     if (videoRef.current && capturedImages.length < 5) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -43,15 +46,14 @@ const App: React.FC = () => {
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
       setCapturedImages([...capturedImages, dataUrl.split(',')[1]]);
     }
-  }, [capturedImages, setCapturedImages, videoRef]);
+  }, [capturedImages, setCapturedImages, videoRef, setError]);
 
-  // New handler for the button click
-  const handleAnalyzeClick = async () => {
-    const success = await analyzeImages();
-    if (success) {
-      cleanupConversation(); // Manually close mic if button is clicked
-    }
-  }
+  // Helper to determine avatar state
+  const getAvatarState = (): 'speaking' | 'listening' | 'thinking' => {
+    if (isAssistantSpeaking) return 'speaking';
+    if (isAssistantThinking) return 'thinking';
+    return 'listening';
+  };
 
   const renderContent = () => {
     switch (appState) {
@@ -110,7 +112,7 @@ const App: React.FC = () => {
                      </div>
                 </div>
                  <div className="flex flex-col md:flex-row items-center justify-center gap-4 w-full">
-                    {/* --- UPDATED: RESPONSIVE GRID --- */}
+                    {/* --- RESPONSIVE GRID --- */}
                     <div className="order-last md:order-first flex-1 h-auto bg-gray-200 rounded-lg grid grid-cols-5 gap-2 p-2 w-full">
                         {capturedImages.map((img, index) => (
                              <img key={index} src={`data:image/jpeg;base64,${img}`} className="w-full aspect-square object-cover rounded-md" />
@@ -124,16 +126,23 @@ const App: React.FC = () => {
                             Capture
                             <span className="text-xs">({capturedImages.length}/5)</span>
                         </button>
-                        <button onClick={handleAnalyzeClick} disabled={capturedImages.length < 3} className="flex-1 md:w-auto h-20 md:h-24 px-6 bg-green-600 text-white rounded-lg font-semibold disabled:bg-gray-400 hover:bg-green-700 transition">
+                        {/* --- UPDATED: onClick is now just analyzeImages --- */}
+                        <button onClick={analyzeImages} disabled={capturedImages.length < 3} className="flex-1 md:w-auto h-20 md:h-24 px-6 bg-green-600 text-white rounded-lg font-semibold disabled:bg-gray-400 hover:bg-green-700 transition">
                             Analyze Photos ({capturedImages.length})
                         </button>
                     </div>
                  </div>
-                 {/* --- UPDATED: HELPER TEXT --- */}
+                 
+                 {/* --- UPDATED: HELPER TEXT & ERROR DISPLAY --- */}
+                 {error && (
+                    <p className="text-red-400 text-center mt-2 px-4 font-semibold">
+                        {error}
+                    </p>
+                 )}
                  <p className="text-white text-center mt-2 px-4">
                     Position your face within the oval and capture 3-5 photos.
                     <br />
-                    When ready, click "Analyze Photos" or say "I'm ready".
+                    When ready, click "Analyze Photos".
                  </p>
             </div>
           );
@@ -159,7 +168,8 @@ const App: React.FC = () => {
             )}
             {isCheckinPhase && (
                 <div className="flex flex-col items-center justify-center text-center z-10">
-                    <Avatar state={isAssistantSpeaking ? 'speaking' : 'listening'} />
+                    {/* --- UPDATED: Pass new state --- */}
+                    <Avatar state={getAvatarState()} />
                     {detailToVerify && (
                         <div className="mt-8 bg-black/30 p-4 rounded-lg">
                             <p className="text-sm text-gray-300 capitalize">{detailToVerify.type === 'unknown' ? 'Heard' : `${detailToVerify.type} for Verification`}:</p>
@@ -191,7 +201,8 @@ const App: React.FC = () => {
   };
 
   const getBackgroundColor = () => {
-    if (isCheckinPhase || [AppState.ANALYZING, AppState.GENERATING_PDF].includes(appState)) return 'bg-gray-800';
+     // isCheckinPhase no longer includes SCANNING
+    if ([AppState.SCANNING, AppState.ANALYZING, AppState.GENERATING_PDF].includes(appState) || isCheckinPhase) return 'bg-gray-800';
     return 'bg-gray-100';
   };
 

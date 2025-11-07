@@ -10,6 +10,7 @@ declare global {
     }
 }
 
+// AI now transitions IMMEDIATELY to scan after phone number.
 const ONBOARDING_SYSTEM_INSTRUCTION = `
 You are "Medzeal AI" — a friendly, professional AI guiding users through a facial skin analysis check-up.
 
@@ -29,19 +30,13 @@ YOUR PERSONA:
     -   You MUST say: "Okay, I have your number as {user's number}. Please check your screen, is that correct?"
     -   If 'no', ask them to repeat it slowly.
 4.  **Transition to Scan (CRITICAL)**:
-    -   Once the phone number is confirmed correct, you MUST say: “Thank you, {name}! We have everything we need. I'm now starting the facial scan. Please position your face in the oval and capture at least 3 photos using the 'Capture' button. When you are done, just say 'analyze my photos' or 'I'm ready'.”
+    -   Once the phone number is confirmed correct, you MUST say: “Thank you, {name}! We have everything we need. I'm now starting the facial scan.”
     -   Immediately after saying this, you MUST call the \`start_facial_scan\` function. Do not wait for any further user input. Just call the function.
 `;
 
 const START_SCAN_TOOL: FunctionDeclaration = {
     name: 'start_facial_scan',
-    description: 'Call this function to start the camera for the facial scan once the user has confirmed they are ready.',
-    parameters: { type: Type.OBJECT, properties: {}, required: [] }
-};
-
-const ANALYZE_PHOTOS_TOOL: FunctionDeclaration = {
-    name: 'analyze_photos',
-    description: "Call this function when the user indicates they have finished capturing photos and are ready for analysis (e.g., they say 'analyze my photos' or 'I'm ready').",
+    description: 'Call this function to start the camera for the facial scan immediately after phone verification.',
     parameters: { type: Type.OBJECT, properties: {}, required: [] }
 };
 
@@ -95,6 +90,7 @@ export const useMedzealAssistant = () => {
     const [error, setError] = useState<string | null>(null);
     const [isMuted, setIsMuted] = useState(false);
     const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
+    const [isAssistantThinking, setIsAssistantThinking] = useState(false); 
     const [detailToVerify, setDetailToVerify] = useState<DetailToVerify | null>(null);
     const [capturedImages, setCapturedImages] = useState<string[]>([]);
     
@@ -155,35 +151,9 @@ export const useMedzealAssistant = () => {
             const friendlyFileName = `Medzeal-AI-Report-${userData.current.name.replace(/\s/g, '_') || 'user'}.pdf`;
             
             // --- Live WhatsApp API Integration Logic ---
-            // The following code demonstrates how to send the report via an API.
-            // This requires hosting the generated PDF to get a public URL, which is
-            // not possible in this frontend-only environment.
-            // For the demo, we trigger a browser download instead.
+            // ... (rest of comments)
             /*
-            const WHATSAPP_API_KEY = "4nAJab0oyVlworJu1veRaGfmvkO0yxf2";
-            const pdfBlob = pdf.output('blob');
-            
-            // Step 1: Upload pdfBlob to a hosting service (e.g., Supabase, S3) to get a public URL.
-            // const publicUrl = await uploadFileAndGetUrl(pdfBlob, friendlyFileName);
-    
-            // Step 2: Call the WhatsApp API with the public URL.
-            const payload = {
-                number: "91" + userData.current.phone,
-                mediatype: "document",
-                mimetype: "application/pdf",
-                caption: `Hi ${userData.current.name}, here is your Medzeal AI Skin Report.`,
-                media: publicUrl, // The public URL from the hosting service
-                fileName: friendlyFileName,
-            };
-    
-            await fetch("https://evo.infispark.in/message/sendMedia/medfordlab", {
-                method: "POST",
-                headers: { 
-                    "Content-Type": "application/json",
-                    "apikey": WHATSAPP_API_KEY
-                },
-                body: JSON.stringify(payload),
-            });
+            ... (rest of API comments)
             */
     
             pdf.save(friendlyFileName);
@@ -196,11 +166,14 @@ export const useMedzealAssistant = () => {
         }
     }, []);
 
-    const analyzeImages = useCallback(async (): Promise<boolean> => {
+    const analyzeImages = useCallback(async () => {
+        // Reset error on new analysis attempt
+        setError(null); 
+        
         if (capturedImages.length < 3) {
-            setError("Please capture at least 3 photos for an accurate analysis. The AI is still listening; please capture more photos and say 'I'm ready' when you are done.");
+            setError("Please capture at least 3 photos for an accurate analysis.");
             setAppState(AppState.SCANNING); // Stay on scanning page
-            return false; // Indicate failure
+            return; // Indicate failure
         }
         
         setAppState(AppState.ANALYZING);
@@ -209,7 +182,7 @@ export const useMedzealAssistant = () => {
         if (!apiKey) {
             setError("The API key is missing. Please ensure it is configured correctly.");
             setAppState(AppState.ERROR);
-            return false;
+            return;
         }
 
         try {
@@ -242,25 +215,37 @@ export const useMedzealAssistant = () => {
 
             setReport(newReport);
             setAppState(AppState.REPORT);
-            return true; // Indicate success
-
+            
         } catch(e) {
             console.error("Analysis failed:", e);
-            setError("Sorry, the analysis could not be completed. Please try again. The AI is still listening.");
-            setAppState(AppState.SCANNING); // Go back to scanning
-            return false; // Indicate failure
+            setError("Sorry, the analysis could not be completed. Please try again.");
+            setAppState(AppState.ERROR); // Go to error state
         }
     }, [capturedImages, userData]);
 
     const handleMessage = useCallback(async (message: LiveServerMessage) => {
         if (message.serverContent?.outputTranscription) {
             setCurrentGeminiText(prev => prev + message.serverContent.outputTranscription.text);
-        } else if (message.serverContent?.inputTranscription && conversationType.current === 'onboarding') {
+        } 
+        
+        // --- NEW DATA CAPTURE LOGIC (BUG FIX) ---
+        else if (message.serverContent?.inputTranscription) {
             const text = message.serverContent.inputTranscription.text;
+            
+            // Show detail on screen as user speaks
             if(lastQuestionRef.current) {
                 setDetailToVerify({ type: lastQuestionRef.current, value: text });
-            } else {
-                 setDetailToVerify({ type: 'unknown', value: text });
+            }
+
+            // When user *finishes* their turn, save the data
+            if ((message.serverContent.inputTranscription as any)?.turnComplete && lastQuestionRef.current) {
+                if (lastQuestionRef.current === 'name') {
+                    userData.current.name = text;
+                } else if (lastQuestionRef.current === 'phone') {
+                    userData.current.phone = text;
+                }
+                // Set thinking state
+                setIsAssistantThinking(true); 
             }
         }
 
@@ -268,13 +253,8 @@ export const useMedzealAssistant = () => {
             for(const fc of message.toolCall.functionCalls) {
                 if (fc.name === 'start_facial_scan') {
                     setAppState(AppState.SCANNING);
-                    // Do not cleanupConversation() here - we want the AI to stay active
-                }
-                if (fc.name === 'analyze_photos') {
-                    const success = await analyzeImages();
-                    if (success) {
-                        cleanupConversation(); // End audio session *after* successful analysis
-                    }
+                    // --- End conversation to open camera ---
+                    cleanupConversation(); 
                 }
                 if (fc.name === 'send_report_to_whatsapp') {
                     cleanupConversation();
@@ -284,28 +264,19 @@ export const useMedzealAssistant = () => {
         }
     
         if (message.serverContent?.turnComplete) {
-            if (conversationType.current === 'onboarding') {
-                const outputText = currentGeminiText.toLowerCase();
-                const inputText = detailToVerify?.value || '';
-        
-                // More robust keyword matching
-                const isAskingForName = outputText.includes("can i get your full name") || outputText.includes("spell your full name");
-                const isAskingForPhone = outputText.includes("mobile number") || outputText.includes("phone number");
-        
-                if (isAskingForName) {
-                    lastQuestionRef.current = 'name';
-                } else if (isAskingForPhone) {
-                    lastQuestionRef.current = 'phone';
-                } 
-                // Only process saved details if the AI is not asking a new question.
-                else if (inputText && lastQuestionRef.current) {
-                    if (lastQuestionRef.current === 'name') {
-                        userData.current.name = inputText;
-                    } else if (lastQuestionRef.current === 'phone') {
-                        userData.current.phone = inputText;
-                    }
-                    lastQuestionRef.current = null;
-                }
+            const outputText = currentGeminiText.toLowerCase();
+            
+            // --- NEW LOGIC: Set next question ref ---
+            const isAskingForName = outputText.includes("can i get your full name") || outputText.includes("spell your full name");
+            const isAskingForPhone = outputText.includes("mobile number") || outputText.includes("phone number");
+    
+            if (isAskingForName) {
+                lastQuestionRef.current = 'name';
+            } else if (isAskingForPhone) {
+                lastQuestionRef.current = 'phone';
+            } else {
+                // If AI is just confirming (e.g., "Is that correct?"), clear the ref
+                lastQuestionRef.current = null;
             }
             
             setTimeout(() => {
@@ -317,6 +288,8 @@ export const useMedzealAssistant = () => {
         const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
         if (base64Audio && outputAudioContextRef.current) {
             setIsAssistantSpeaking(true);
+            setIsAssistantThinking(false); // Stop thinking when speaking starts
+            
             const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContextRef.current, 24000, 1);
             const source = outputAudioContextRef.current.createBufferSource();
             source.buffer = audioBuffer;
@@ -400,8 +373,7 @@ export const useMedzealAssistant = () => {
                     systemInstruction: isOnboarding ? ONBOARDING_SYSTEM_INSTRUCTION : POST_REPORT_SYSTEM_INSTRUCTION,
                     inputAudioTranscription: {},
                     outputAudioTranscription: {},
-                    // Updated tools list
-                    tools: [{functionDeclarations: isOnboarding ? [START_SCAN_TOOL, ANALYZE_PHOTOS_TOOL] : [SEND_WHATSAPP_TOOL]}]
+                    tools: [{functionDeclarations: isOnboarding ? [START_SCAN_TOOL] : [SEND_WHATSAPP_TOOL]}]
                 },
             });
         } catch (err) {
@@ -410,8 +382,6 @@ export const useMedzealAssistant = () => {
             setAppState(AppState.DENIED);
         }
     }, [handleMessage, isMuted, cleanupConversation]);
-
-    // analyzeImages was updated above
 
     useEffect(() => {
         let videoStream: MediaStream | null = null;
@@ -447,7 +417,6 @@ export const useMedzealAssistant = () => {
     
     const toggleMute = () => setIsMuted(prev => !prev);
     
-    // --- THIS IS THE CORRECTED PART ---
     return {
         appState,
         videoRef,
@@ -455,14 +424,16 @@ export const useMedzealAssistant = () => {
         startPostReportConversation: () => startConversation('post_report'),
         error,
         report,
-        isMuted, // Corrected from isMMuted
-        toggleMute: toggleMute, // Corrected from toggleMMute
+        isMuted,
+        toggleMute: toggleMute,
         isAssistantSpeaking,
+        isAssistantThinking, // Expose new state
         detailToVerify,
         currentGeminiText,
         capturedImages,
         setCapturedImages,
         analyzeImages,
-        cleanupConversation
+        cleanupConversation,
+        setError // Expose setError
     }
 }
