@@ -1,0 +1,8 @@
+{
+  "name": "Medzeal AI Checkup",
+  "description": "An AI-powered assistant that provides a preliminary facial skin analysis using your device's camera.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
